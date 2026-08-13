@@ -1,51 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 
-export default function Home() {
-  const [orders, setOrders] = useState<any[]>([]);
-  const [live, setLive] = useState(false);
-  const [error, setError] = useState("");
+type Order = { id:string; external_order_id:string|null; tracking_id:string|null; pidge_order_id:string|null; rider_id:string|null; customer_name:string|null; customer_phone:string|null; pickup_address:string|null; drop_address:string|null; status:string|null; updated_at:string|null };
+type Rider = { id:string; name:string|null; phone:string|null; vehicle_number:string|null; status:string|null; last_lat:number|null; last_lng:number|null; last_seen_at:string|null };
+const LIVE=["created","validated","pushed_to_pidge","assigned","picked_up","out_for_delivery"];
+const label=(v:string|null)=>(v||"Unknown").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase());
 
-  useEffect(() => {
-    const sb = getSupabase();
-    const channel = sb.channel("bmx-orders")
-      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, (payload) => {
-        setOrders((current) => {
-          if (payload.eventType === "INSERT") return [payload.new, ...current];
-          if (payload.eventType === "UPDATE") return current.map((o) => o.id === payload.new.id ? payload.new : o);
-          return current.filter((o) => o.id !== payload.old.id);
-        });
-      })
-      .subscribe((status) => setLive(status === "SUBSCRIBED"));
-
-    sb.from("orders").select("*").order("updated_at", { ascending: false }).limit(500)
-      .then(({ data, error: queryError }) => {
-        if (queryError) setError(queryError.message);
-        else setOrders(data ?? []);
-      });
-
-    return () => { sb.removeChannel(channel); };
-  }, []);
-
-  return (
-    <main style={{ padding: 32, fontFamily: "Arial", background: "#f5f6f8", minHeight: "100vh" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div><h1>BM XPRESS Control Tower</h1><p>Live logistics operations</p></div>
-        <strong style={{ color: live ? "#059669" : "#d97706" }}>● {live ? "REALTIME CONNECTED" : "CONNECTING..."}</strong>
-      </div>
-      <div style={{ background: "white", padding: 20, borderRadius: 12, overflowX: "auto" }}>
-        {error && <p style={{ color: "#b91c1c" }}>{error}</p>}
-        <h2>Live Orders ({orders.length})</h2>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th>Order</th><th>Tracking</th><th>Customer</th><th>Status</th><th>Updated</th></tr></thead>
-          <tbody>{orders.map((o) => <tr key={o.id}>
-            <td>{o.external_order_id ?? "-"}</td><td>{o.tracking_id ?? "-"}</td><td>{o.customer_name ?? "-"}</td><td>{o.status ?? "-"}</td><td>{o.updated_at ? new Date(o.updated_at).toLocaleString() : "-"}</td>
-          </tr>)}</tbody>
-        </table>
-        {!orders.length && !error && <p>No orders yet.</p>}
-      </div>
-    </main>
-  );
+export default function Home(){
+ const [orders,setOrders]=useState<Order[]>([]),[riders,setRiders]=useState<Rider[]>([]),[filter,setFilter]=useState("all"),[search,setSearch]=useState(""),[selected,setSelected]=useState<Order|null>(null),[live,setLive]=useState(false),[error,setError]=useState("");
+ useEffect(()=>{const sb=getSupabase(); Promise.all([sb.from("orders").select("*").order("updated_at",{ascending:false}).limit(500),sb.from("riders").select("*").limit(500)]).then(([a,b])=>{if(a.error)setError(a.error.message);else setOrders((a.data||[]) as Order[]);if(!b.error)setRiders((b.data||[]) as Rider[])}); const ch=sb.channel("bmx-control-tower").on("postgres_changes",{event:"*",schema:"public",table:"orders"},p=>setOrders(c=>p.eventType==="INSERT"?[p.new as Order,...c]:p.eventType==="UPDATE"?c.map(o=>o.id===p.new.id?p.new as Order:o):c.filter(o=>o.id!==p.old.id))).on("postgres_changes",{event:"*",schema:"public",table:"riders"},p=>setRiders(c=>p.eventType==="INSERT"?[p.new as Rider,...c]:p.eventType==="UPDATE"?c.map(r=>r.id===p.new.id?p.new as Rider:r):c.filter(r=>r.id!==p.old.id))).on("postgres_changes",{event:"INSERT",schema:"public",table:"rider_locations"},p=>{const x=p.new as any;setRiders(c=>c.map(r=>r.id===x.rider_id?{...r,last_lat:x.latitude,last_lng:x.longitude,last_seen_at:x.recorded_at,status:"online"}:r))}).subscribe(s=>setLive(s==="SUBSCRIBED"));return()=>{sb.removeChannel(ch)}},[]);
+ const filtered=useMemo(()=>orders.filter(o=>{const f=filter==="all"||(filter==="live"?LIVE.includes(o.status||""):o.status===filter);return f&&[o.external_order_id,o.tracking_id,o.pidge_order_id,o.customer_name,o.customer_phone,o.drop_address].join(" ").toLowerCase().includes(search.toLowerCase())}),[orders,filter,search]);
+ const stats={total:orders.length,live:orders.filter(o=>LIVE.includes(o.status||"")).length,assigned:orders.filter(o=>o.status==="assigned").length,delivery:orders.filter(o=>o.status==="out_for_delivery").length,delivered:orders.filter(o=>o.status==="delivered").length}; const online=riders.filter(r=>r.status==="online").length;
+ return <div className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">BX</span><div><b>BM XPRESS</b><small>CONTROL TOWER</small></div></div><nav className="nav"><div className="nav-section">OPERATIONS</div><button className="nav-item active">⌁ <span>Live Overview</span></button><button className="nav-item">◉ <span>Live Orders</span><em>{stats.live}</em></button><button className="nav-item">⌖ <span>Rider Tracking</span></button><button className="nav-item">◫ <span>Exceptions</span></button><div className="nav-section">MANAGEMENT</div><button className="nav-item">▣ <span>Clients</span></button><button className="nav-item">▤ <span>Riders</span></button><button className="nav-item">⇄ <span>Pidge Integration</span></button><button className="nav-item">▥ <span>Reports</span></button><div className="nav-section">SYSTEM</div><button className="nav-item">⚙ <span>Settings</span></button></nav><div className="sidebar-foot"><span className="health-dot"/> All systems operational</div></aside>
+ <main className="main-shell"><header className="topbar"><div><div className="eyebrow">SUPER ADMIN</div><h1>Live Operations</h1><p>Monitor every shipment, rider and delivery in real time.</p></div><div className="top-actions"><div className={`connection ${live?"on":""}`}><span/>{live?"Realtime connected":"Connecting"}</div><button className="icon-btn">⌕</button><div className="admin-avatar">BA</div></div></header><section className="content">{error&&<div className="error-banner">Unable to load live data: {error}</div>}
+ <div className="stats-grid"><div className="metric-card"><span className="metric-label">TOTAL ORDERS</span><strong>{stats.total}</strong><span className="metric-note">Today</span></div><div className="metric-card accent"><span className="metric-label">LIVE ORDERS</span><strong>{stats.live}</strong><span className="metric-note positive">● Updating live</span></div><div className="metric-card"><span className="metric-label">ASSIGNED</span><strong>{stats.assigned}</strong><span className="metric-note">Riders assigned</span></div><div className="metric-card"><span className="metric-label">OUT FOR DELIVERY</span><strong>{stats.delivery}</strong><span className="metric-note">On the road</span></div><div className="metric-card"><span className="metric-label">DELIVERED</span><strong>{stats.delivered}</strong><span className="metric-note">Completed</span></div></div>
+ <div className="section-head"><div><h2>Live Network</h2><p>Real-time view of active delivery operations.</p></div><div className="network-status"><span className="health-dot"/> {online} riders online</div></div><div className="network-grid"><div className="map-card"><div className="map-header"><div><b>Rider location</b><span>Live GPS positions</span></div><button className="map-control">Full screen ↗</button></div><div className="map-surface"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><div className="map-road r4"/>{riders.filter(r=>r.last_lat!==null&&r.last_lng!==null).slice(0,20).map((r,i)=><div key={r.id} className="rider-pin" style={{left:`${12+(i*31)%76}%`,top:`${17+(i*47)%68}%`}} title={r.name||"Rider"}><span>●</span></div>)}{!riders.some(r=>r.last_lat!==null&&r.last_lng!==null)&&<div className="map-empty"><b>Live map ready</b><span>Rider GPS locations will appear here when Pidge location callbacks arrive.</span></div>}<div className="map-legend"><span><i className="legend-dot"/> Rider</span><span>● GPS live</span></div></div></div><div className="side-card"><div className="side-card-title"><div><b>Operations health</b><span>System status</span></div><span className="healthy">Healthy</span></div><div className="health-row"><span>Realtime stream</span><b>{live?"Connected":"Connecting"}</b></div><div className="health-row"><span>Riders online</span><b>{online}</b></div><div className="health-row"><span>Pidge gateway</span><b className="muted-text">Ready</b></div><div className="health-row"><span>AI ETA engine</span><b className="muted-text">Ready</b></div><div className="mini-alert"><b>AI ETA</b><span>Prediction layer is ready for historical delivery data.</span></div></div></div>
+ <div className="section-head orders-head"><div><h2>Live Orders</h2><p>Every status change appears automatically.</p></div><button className="primary-btn">+ Create Order</button></div><div className="orders-card"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search order, tracking ID, customer..."/></div><select value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All orders</option><option value="live">Live orders</option><option value="assigned">Assigned</option><option value="picked_up">Picked up</option><option value="out_for_delivery">Out for delivery</option><option value="delivered">Delivered</option><option value="failed">Failed</option></select></div><div className="table-wrap"><table className="orders-table"><thead><tr><th>ORDER</th><th>TRACKING ID</th><th>CUSTOMER</th><th>RIDER</th><th>STATUS</th><th>LAST UPDATE</th><th/></tr></thead><tbody>{filtered.map(o=>{const r=riders.find(x=>x.id===o.rider_id);return <tr key={o.id} onClick={()=>setSelected(o)}><td><b>{o.external_order_id||"—"}</b><small>{o.pidge_order_id||"Pidge pending"}</small></td><td><span className="tracking-id">{o.tracking_id||"—"}</span></td><td><b>{o.customer_name||"Unknown customer"}</b><small>{o.customer_phone||"—"}</small></td><td>{r?<div className="rider-cell"><span className="avatar">{(r.name||"R").slice(0,1).toUpperCase()}</span><div><b>{r.name||"Rider"}</b><small>{r.vehicle_number||"Vehicle pending"}</small></div></div>:<span className="muted-text">Unassigned</span>}</td><td><span className={`status-pill ${o.status||""}`}>{label(o.status)}</span></td><td>{o.updated_at?<><b>{new Date(o.updated_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</b><small>{new Date(o.updated_at).toLocaleDateString()}</small></>:"—"}</td><td className="arrow">›</td></tr>})}</tbody></table></div>{!filtered.length&&<div className="empty-state"><b>No orders found</b><span>Try changing the filter or search term.</span></div>}</div></section></main>
+ {selected&&<div className="drawer-backdrop" onClick={()=>setSelected(null)}><aside className="order-drawer" onClick={e=>e.stopPropagation()}><button className="drawer-close" onClick={()=>setSelected(null)}>×</button><div className="eyebrow">ORDER DETAILS</div><h2>{selected.external_order_id||selected.tracking_id}</h2><span className={`status-pill ${selected.status||""}`}>{label(selected.status)}</span><div className="drawer-block"><span>Tracking ID</span><b>{selected.tracking_id}</b></div><div className="drawer-block"><span>Customer</span><b>{selected.customer_name||"—"}</b><small>{selected.customer_phone||""}</small></div><div className="drawer-block"><span>Pickup</span><b>{selected.pickup_address||"—"}</b></div><div className="drawer-block"><span>Delivery</span><b>{selected.drop_address||"—"}</b></div><div className="drawer-block"><span>Pidge order</span><b>{selected.pidge_order_id||"Pending"}</b></div></aside></div>}
+ </div>;
 }
